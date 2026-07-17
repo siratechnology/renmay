@@ -21,6 +21,22 @@ npm run dev      # http://localhost:3000
 npm run build    # بنیاتنانی بەرهەمهێنان
 ```
 
+## Docker
+
+لەسەر سێرڤەری Linux، دوای `git pull`:
+
+```bash
+# بە docker compose (ئاسانترین)
+docker compose up -d --build      # http://SERVER-IP:3000
+
+# یان بە دەستی
+docker build -t renmay-quiz .
+docker run -d -p 3000:3000 --name renmay-quiz --restart unless-stopped renmay-quiz
+```
+
+وێنەکە standalone-ە (قەبارە بچووک)، بە node:22-alpine و بەکارهێنەری non-root
+جێبەجێ دەبێت. پۆرت: `3000`.
+
 ## داتا
 
 پرسیارەکان لە `data/questions.json`ـدان (٣٨٣ پرسیار)، دروستکراو لە فایلی Excel/CSV.
