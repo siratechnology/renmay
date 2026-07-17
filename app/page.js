@@ -1,25 +1,127 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { getSections, buildQuiz } from "@/lib/quiz";
+import { useEffect, useMemo, useState } from "react";
+import { getSections, buildQuiz, totalQuestions } from "@/lib/quiz";
 
 const LETTERS = ["أ", "ب", "ج", "د"];
+const STORAGE_KEY = "renmay-progress-v1";
+
+/* ---------- progress encode/decode (kept tiny so it fits in a link) ---------- */
+// answers: array of ints (-1 = unanswered). Encoded one char per question.
+function encodeAnswers(answers) {
+  return answers.map((x) => (x < 0 ? "_" : String(x))).join("");
+}
+function decodeAnswers(str, len) {
+  const out = new Array(len).fill(-1);
+  if (!str) return out;
+  for (let i = 0; i < len && i < str.length; i++) {
+    const c = str[i];
+    out[i] = c === "_" ? -1 : Number(c);
+  }
+  return out;
+}
+function scoreOf(quiz, answers) {
+  let correct = 0;
+  let answered = 0;
+  for (let i = 0; i < quiz.length; i++) {
+    if (answers[i] !== -1) {
+      answered++;
+      if (answers[i] === quiz[i].answerIndex) correct++;
+    }
+  }
+  return { correct, answered };
+}
+
+function readUrlState() {
+  if (typeof window === "undefined") return null;
+  const p = new URLSearchParams(window.location.search);
+  const m = p.get("m");
+  if (!m) return null;
+  return { m, i: Math.max(0, Number(p.get("i")) || 0), a: p.get("a") || "" };
+}
+function readStoredState() {
+  if (typeof window === "undefined") return null;
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+function persist(state) {
+  if (typeof window === "undefined") return;
+  const p = new URLSearchParams();
+  p.set("m", state.m);
+  p.set("i", String(state.i));
+  p.set("a", state.a);
+  const url = `${window.location.pathname}?${p.toString()}`;
+  window.history.replaceState(null, "", url);
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, ts: Date.now() }));
+  } catch {}
+}
+function clearPersisted() {
+  if (typeof window === "undefined") return;
+  window.history.replaceState(null, "", window.location.pathname);
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {}
+}
 
 export default function Home() {
   const sections = useMemo(() => getSections(), []);
+  const total = useMemo(() => totalQuestions(), []);
   const [view, setView] = useState("setup"); // setup | quiz | result
+  const [madda, setMadda] = useState("all");
   const [quiz, setQuiz] = useState([]);
   const [sectionLabel, setSectionLabel] = useState("");
   const [current, setCurrent] = useState(0);
-  const [answers, setAnswers] = useState([]); // chosen index per question
+  const [answers, setAnswers] = useState([]);
+  const [saved, setSaved] = useState(null); // resumable state on the setup screen
 
-  function startQuiz(madda, label) {
-    const q = buildQuiz(madda);
+  // On first load: if a link (or saved progress) exists, offer to resume.
+  useEffect(() => {
+    const fromUrl = readUrlState();
+    const fromStore = readStoredState();
+    const st = fromUrl || fromStore;
+    if (st && st.m) {
+      const q = buildQuiz(st.m);
+      if (q.length) {
+        setSaved({ ...st, count: q.length });
+        if (fromUrl) resume(st, q); // a shared link resumes straight into the quiz
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function labelFor(m) {
+    if (m === "all") return "هەموو ماددەکان (بەڕیزبەندی)";
+    const s = sections.find((x) => String(x.madda) === String(m));
+    return s ? s.label : `ماددە ${m}`;
+  }
+
+  function resume(st, prebuilt) {
+    const q = prebuilt || buildQuiz(st.m);
+    const ans = decodeAnswers(st.a, q.length);
+    setMadda(st.m);
     setQuiz(q);
-    setSectionLabel(label);
-    setAnswers(new Array(q.length).fill(-1));
+    setSectionLabel(labelFor(st.m));
+    setAnswers(ans);
+    setCurrent(Math.min(st.i, q.length - 1));
+    setView("quiz");
+    setSaved(null);
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
+  }
+
+  function startQuiz(m) {
+    const q = buildQuiz(m);
+    const ans = new Array(q.length).fill(-1);
+    setMadda(m);
+    setQuiz(q);
+    setSectionLabel(labelFor(m));
+    setAnswers(ans);
     setCurrent(0);
     setView("quiz");
+    setSaved(null);
+    persist({ m, i: 0, a: encodeAnswers(ans) });
     if (typeof window !== "undefined") window.scrollTo(0, 0);
   }
 
@@ -28,11 +130,14 @@ export default function Home() {
     const next = [...answers];
     next[current] = optIndex;
     setAnswers(next);
+    persist({ m: madda, i: current, a: encodeAnswers(next) });
   }
 
   function goNext() {
     if (current < quiz.length - 1) {
-      setCurrent(current + 1);
+      const ni = current + 1;
+      setCurrent(ni);
+      persist({ m: madda, i: ni, a: encodeAnswers(answers) });
       window.scrollTo(0, 0);
     } else {
       setView("result");
@@ -42,22 +147,38 @@ export default function Home() {
 
   function goPrev() {
     if (current > 0) {
-      setCurrent(current - 1);
+      const ni = current - 1;
+      setCurrent(ni);
+      persist({ m: madda, i: ni, a: encodeAnswers(answers) });
       window.scrollTo(0, 0);
     }
   }
 
   function restart() {
+    clearPersisted();
     setView("setup");
     setQuiz([]);
     setAnswers([]);
     setCurrent(0);
+    setSaved(null);
     window.scrollTo(0, 0);
   }
 
   if (view === "setup") {
     return (
-      <SetupView sections={sections} onStart={startQuiz} total={quizTotal(sections)} />
+      <SetupView
+        sections={sections}
+        total={total}
+        saved={saved}
+        onStart={startQuiz}
+        onResume={() => resume(saved)}
+        onDiscard={() => {
+          clearPersisted();
+          setSaved(null);
+        }}
+        savedLabel={saved ? labelFor(saved.m) : ""}
+        savedScore={saved ? scoreOf(buildQuiz(saved.m), decodeAnswers(saved.a, saved.count)) : null}
+      />
     );
   }
   if (view === "quiz") {
@@ -70,7 +191,10 @@ export default function Home() {
         onChoose={choose}
         onNext={goNext}
         onPrev={goPrev}
-        onExit={restart}
+        onExit={() => {
+          setView("setup");
+          window.scrollTo(0, 0);
+        }}
       />
     );
   }
@@ -84,12 +208,8 @@ export default function Home() {
   );
 }
 
-function quizTotal(sections) {
-  return sections.reduce((s, x) => s + x.count, 0);
-}
-
 /* ---------- Setup ---------- */
-function SetupView({ sections, onStart, total }) {
+function SetupView({ sections, total, saved, onStart, onResume, onDiscard, savedLabel, savedScore }) {
   return (
     <main className="container">
       <header className="app-header">
@@ -101,17 +221,40 @@ function SetupView({ sections, onStart, total }) {
         </p>
       </header>
 
+      {saved && (
+        <section className="card resume-card">
+          <div>
+            <div className="section-title">بەردەوامبوون لەسەر تاقیکردنەوەی پێشوو</div>
+            <div className="section-meta">
+              {savedLabel} — پرسیاری {Math.min(saved.i + 1, saved.count)} لە {saved.count}
+              {savedScore && ` · نمرە: ${savedScore.correct} ڕاست لە ${savedScore.answered} وەڵامدراو`}
+            </div>
+          </div>
+          <div className="resume-actions">
+            <button className="btn btn-primary" onClick={onResume}>
+              بەردەوامبوون
+            </button>
+            <button className="btn btn-ghost" onClick={onDiscard}>
+              سڕینەوە
+            </button>
+          </div>
+        </section>
+      )}
+
       <section className="card panel">
         <h2 style={{ margin: "0 0 4px", fontSize: 18 }}>لە کام ماددە/بەشدا تاقی دەبیتەوە؟</h2>
         <p className="subtitle" style={{ margin: 0 }}>
-          کۆی گشتی {total} پرسیار لە {sections.length} ماددەدا
+          کۆی گشتی {total} پرسیار لە {sections.length} ماددەدا — دەتوانیت لە نیوەڕێدا
+          بوەستیت و دواتر لە هەمان بەستەر (لینک) بەردەوام بیت.
         </p>
 
         <div className="section-grid">
-          <button className="section-card all" onClick={() => onStart("all", "هەموو ماددەکان")}>
+          <button className="section-card all" onClick={() => onStart("all")}>
             <div>
-              <div className="section-title">هەموو پرسیارەکان</div>
-              <div className="section-meta">تاقیکردنەوەی گشتی لەسەر هەموو ماددەکان</div>
+              <div className="section-title">هەموو پرسیارەکان — بەڕیزبەندی</div>
+              <div className="section-meta">
+                لە پێشەکییەوە تا کۆتا ماددە، بەھەمان ڕیزبەندیی ڕەسەن
+              </div>
             </div>
             <span className="pill">{total} پرسیار</span>
           </button>
@@ -120,7 +263,7 @@ function SetupView({ sections, onStart, total }) {
             <button
               key={s.madda}
               className="section-card"
-              onClick={() => onStart(s.madda, s.label)}
+              onClick={() => onStart(String(s.madda))}
             >
               <span className="pill">{s.count} پرسیار</span>
               <span className="section-title">{s.label}</span>
@@ -138,6 +281,16 @@ function QuizView({ quiz, current, answers, sectionLabel, onChoose, onNext, onPr
   const chosen = answers[current];
   const answered = chosen !== -1;
   const pct = Math.round(((current + (answered ? 1 : 0)) / quiz.length) * 100);
+  const { correct, answered: answeredCount } = scoreOf(quiz, answers);
+  const [copied, setCopied] = useState(false);
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  }
 
   return (
     <main className="container">
@@ -148,6 +301,15 @@ function QuizView({ quiz, current, answers, sectionLabel, onChoose, onNext, onPr
         <span className="q-count">
           پرسیاری {current + 1} لە {quiz.length} — {sectionLabel}
         </span>
+      </div>
+
+      <div className="quiz-top" style={{ marginBottom: 8 }}>
+        <span className="score-live">
+          ڕاست: {correct} لە {answeredCount} وەڵامدراو
+        </span>
+        <button className="btn btn-ghost btn-sm" onClick={copyLink}>
+          {copied ? "کۆپی کرا ✓" : "کۆپیکردنی بەستەری بەردەوامبوون"}
+        </button>
       </div>
 
       <div className="progress">
@@ -208,7 +370,6 @@ function ResultView({ quiz, answers, sectionLabel, onRestart }) {
   const wrong = total - correct;
   const pct = total ? Math.round((correct / total) * 100) : 0;
 
-  const passed = pct >= 50;
   const title = pct >= 90 ? "نایاب! 🎉" : pct >= 70 ? "زۆر باش 👏" : pct >= 50 ? "باش ✅" : "پێویستی بە خوێندنەوەی زیاترە 📚";
   const ringColor = pct >= 70 ? "var(--green)" : pct >= 50 ? "var(--amber)" : "var(--red)";
 
