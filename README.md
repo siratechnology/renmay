@@ -27,7 +27,7 @@ npm run build    # بنیاتنانی بەرهەمهێنان
 
 ```bash
 # بە docker compose (ئاسانترین)
-docker compose up -d --build      # http://SERVER-IP:3000
+docker compose up -d --build      # http://SERVER-IP:4100
 
 # یان بە دەستی
 docker build -t renmay-quiz .
